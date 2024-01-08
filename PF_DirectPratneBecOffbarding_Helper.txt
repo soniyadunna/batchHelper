@@ -1,0 +1,437 @@
+public without sharing class PF_DirectPratneBecOffbarding_Helper {
+    public static final string  DIRECT='DIRECT';
+    public static final string  RESELLER='Reseller';
+    public static final string  OTHER='Other';
+    public static final string  NONRESELLER='Non - Reseller';
+    public static final string  LP='LP';
+    public static final string  STI='STI';
+    public static final string  STIA='STIA';
+    public static final String  Y = 'Y';
+    public static final string PREG_Other ='PREG_Other';
+    public static final string CSPP ='CSPP';
+    public static final string LPA ='LPA';
+    public static final string DELETED = 'DELETED';
+    public static final string NR_PTR ='NR_PTR';
+    public static final string DEVNET_PTR ='DEVNET_PTR';
+    Public static final string EXPIRED = 'EXPIRED';
+    Public static final string UNREGISTERED = 'UNREGISTERED';
+    Public static final string VAR='VAR';
+    public static final list<pxp_country__c> countryList =[SELECT Name, THEATRE_CD__c,PXP_Country_Code__c,COUNTRY_CD__c,PXP_COUNTRY_GROUP_NAME__c FROM PXP_Country__c];
+    
+    
+    
+   public static returnWrapperscope filterScopedApplications(List<PF_Application__c> scope) {
+    Set<Id> accountWithDirectBEC = new Set<Id>();
+    Set<String> DNRTrueApplication = new Set<String>();
+    List<PF_Application__c> thirdListApplicationRecords = new List<PF_Application__c>();
+    returnWrapperscope scopeItems = new returnWrapperscope();
+    
+    // Extract direct BEC accounts
+    for (PF_Application__c app : scope) {
+        accountWithDirectBEC.add(app.PF_Account__c);
+    }
+
+    // Extract DNR applications
+    Set<String> finalAccountID = new Set<String>();
+    for (PF_Application__c app : scope) {
+        if (accountWithDirectBEC.contains(app.PF_Account__c)) {
+            thirdListApplicationRecords.add(app);
+            finalAccountID.add(app.PF_Account__c);
+            if (app.Pf_account__r.DNR__c == 'Y') {
+                DNRTrueApplication.add(app.Id);
+            }
+        }
+    }
+
+    // Handle Reseller+other/NR and Other+NR combinations
+    handleResellerAndOtherNRCombinations(thirdListApplicationRecords, DNRTrueApplication, finalAccountID, scopeItems);
+
+    return scopeItems;
+}
+
+private static void handleResellerAndOtherNRCombinations(
+        List<PF_Application__c> thirdListApplicationRecords,
+        Set<String> DNRTrueApplication,
+        Set<String> finalAccountID,
+        returnWrapperscope scopeItems
+) {
+    Set<Id> resellerAccountID = new Set<Id>();
+    Set<Id> otherAccountID = new Set<Id>();
+    Map<Id, List<PF_Application__c>> otherResellerCombination = new Map<Id, List<PF_Application__c>>();
+    Map<String, PF_Application__c> otherAndNRCombinationForResellerList = new Map<String, PF_Application__c>();
+    Map<String, PF_Application__c> otherNRCombinationForExpiry = new Map<String, PF_Application__c>();
+
+    for (PF_Application__c app : thirdListApplicationRecords) {
+        if (app.PF_Partner_Program_Type__c == 'RESELLER') {
+            resellerAccountID.add(app.PF_Account__c);
+        } else if (app.PF_Partner_Program_Type__c == 'OTHER' && !resellerAccountID.contains(app.PF_Account__c)) {
+            otherAccountID.add(app.PF_Account__c);
+        }
+    }
+
+    for (PF_Application__c app : thirdListApplicationRecords) {
+        if ((app.PF_Partner_Program_Type__c == 'RESELLER' || app.PF_Partner_Program_Type__c == 'OTHER') &&
+                !otherResellerCombination.containsKey(app.PF_Account__c)) {
+            otherResellerCombination.put(app.PF_Account__c, new List<PF_Application__c>{app});
+        } else if (otherResellerCombination.containsKey(app.PF_Account__c)) {
+            otherResellerCombination.get(app.PF_Account__c).add(app);
+        }
+
+        if (resellerAccountID.contains(app.PF_Account__c)) {
+            handleResellerAccount(app, finalAccountID, DNRTrueApplication, otherAndNRCombinationForResellerList, scopeItems);
+        } else if (otherAccountID.contains(app.PF_Account__c)) {
+            handleOtherAccount(app, finalAccountID, DNRTrueApplication, otherNRCombinationForExpiry, scopeItems);
+        } else {
+            scopeItems.finalApplications.add(app);
+        }
+    }
+
+    // Set values in the scopeItems
+    scopeItems.otherAndNRCombinationForResellerList = otherAndNRCombinationForResellerList;
+    scopeItems.otherNRcombinationfForExpiry = otherNRCombinationForExpiry;
+    scopeItems.otherResellerCombination = otherResellerCombination;
+}
+
+private static void handleResellerAccount(
+        PF_Application__c app,
+        Set<String> finalAccountID,
+        Set<String> DNRTrueApplication,
+        Map<String, PF_Application__c> otherAndNRCombinationForResellerList,
+        returnWrapperscope scopeItems
+) {
+    if (app.PF_Partner_Program_Type__c != 'NONRESELLER' && app.PF_Partner_Program_Type__c != 'OTHER') {
+        scopeItems.finalApplications.add(app);
+    } else if (system.today().daysBetween(app.PF_Partner_Agreement__r.PXP_PAM_Agreement_Expiration_Date__c) <= 0) {
+        otherAndNRCombinationForResellerList.put(app.Id, app);
+    }
+}
+
+private static void handleOtherAccount(
+        PF_Application__c app,
+        Set<String> finalAccountID,
+        Set<String> DNRTrueApplication,
+        Map<String, PF_Application__c> otherNRCombinationForExpiry,
+        returnWrapperscope scopeItems
+) {
+    if (app.PF_Partner_Program_Type__c != 'NONRESELLER') {
+        scopeItems.finalApplications.add(app);
+    } else if (system.today().daysBetween(app.PF_Partner_Agreement__r.PXP_PAM_Agreement_Expiration_Date__c) <= 0) {
+        otherNRCombinationForExpiry.put(app.Id, app);
+    }
+}
+
+
+ public static Set<String> batchProcessingMethod(ReturnWrapperScope scopeItems) {
+    Map<String, List<PF_Application__c>> accountAppMap = new Map<String, List<PF_Application__c>>();
+    excuionMethodWrapper wrap = new excuionMethodWrapper();
+        set<string> returnAggIds = new set<string>();
+
+    // Populate accountAppMap
+    for (PF_Application__c app : scopeItems.finalApplications) {
+        if (!accountAppMap.containsKey(app.PF_Account__c)) {
+            accountAppMap.put(app.PF_Account__c, new List<PF_Application__c>{app});
+        } else {
+            accountAppMap.get(app.PF_Account__c).add(app);
+        }
+    }
+
+    // Execute method for each email list
+    Set<Set<String>> emailLists = new Set<Set<String>>{
+        scopeItems.ExpiryReminderEmailSTI.keySet(),
+        scopeItems.ExpiryReminderEmailSTIAList.keySet(),
+        scopeItems.ExpiryReminderEmailLPList.keySet(),
+        scopeItems.ExpiryReminderEmailResselerList.keySet(),
+        scopeItems.ExpiryReminderEmailOtherList.keySet(),
+        scopeItems.ExpiryReminderEmailNRList.keySet(),
+        scopeItems.DNRExpiryReminderEmailSTI.keySet(),
+        scopeItems.DNRExpiryReminderEmailSTIAList.keySet(),
+        scopeItems.DNRExpiryReminderEmailLPList.keySet(),
+        scopeItems.DNRExpiryReminderEmailResselerList.keySet(),
+        scopeItems.DNRExpiryReminderEmailOtherList.keySet(),
+        scopeItems.DNRExpiryReminderEmailNRList.keySet(),
+        scopeItems.otherAndNRCombinationForResellerList.keySet(),
+        scopeItems.otherNRcombinationfForExpiry.keySet()
+    };
+        for (Set<String> emailList : emailLists) {
+        if (emailList.size() > 0) {
+            wrap = excutionMethod(scopeItems.finalApplications, emailList, wrap);
+        }
+    }
+
+    // Agreement update
+    if (!wrap.readyToexpireAgreements.isEmpty()) {
+        List<PXP_PAM_Partner_Agreement__c> agreementsToBeUpdated = [
+            SELECT Id, PF_Agreement_Status__c
+            FROM PXP_PAM_Partner_Agreement__c
+            WHERE Id IN :wrap.readyToexpireAgreements
+        ];
+
+        List<PXP_PAM_Partner_Agreement__c> updatedAgreements = new List<PXP_PAM_Partner_Agreement__c>();
+        for (PXP_PAM_Partner_Agreement__c agg : agreementsToBeUpdated) {
+            agg.PF_Agreement_Status__c = 'EXPIRED';
+            updatedAgreements.add(agg);
+        }
+
+        Database.SaveResult[] updateResult = Database.update(updatedAgreements, false);
+        for (Database.SaveResult sr : updateResult) {
+            if (sr.isSuccess()) {
+                System.debug('Successfully Updated agreement ::' + sr.getId());
+                returnAggIds.add(sr.getId());
+            }
+        }
+    }
+
+    // Qualification update
+    // Qualification update
+if (!wrap.accountsForQual.isEmpty()) {
+    Map<Id, List<String>> accountAppProgramMap = new Map<Id, List<String>>();
+    Set<Id> accountsForQualSet = new Set<Id>(wrap.accountsForQual);
+
+    if (!wrap.ReadyToExpireApplications.isEmpty()) {
+        for (PF_Application__c app : wrap.ReadyToExpireApplications) {
+            if (!accountAppProgramMap.containsKey(app.PF_Account__c)) {
+                accountAppProgramMap.put(app.PF_Account__c, new List<String>{app.PF_Partner_Program_Type__c});
+            } else {
+                accountAppProgramMap.get(app.PF_Account__c).add(app.PF_Partner_Program_Type__c);
+            }
+        }
+    }
+
+    List<PXP_PAM_Partner_Qualification__c> qualsToBeUpdated = new List<PXP_PAM_Partner_Qualification__c>();
+    for (PXP_PAM_Partner_Qualification__c qual : [
+        SELECT Id, PXP_PAM_Qualification_Code__c, Name, PXP_PAM_Status__c, PXP_PAM_Partner_Account__c, PXP_PAM_Partner_Account__r.Name
+        FROM PXP_PAM_Partner_Qualification__c
+        WHERE PXP_PAM_Partner_Account__c IN :accountsForQualSet AND PXP_PAM_Status__c != 'DELETED'
+    ]) {
+        if (accountAppProgramMap.containsKey(qual.PXP_PAM_Partner_Account__c) &&
+            accountAppProgramMap.get(qual.PXP_PAM_Partner_Account__c).size() > 0) {
+            List<PF_Application__c> otherResellerCombination = scopeItems.OtherResellerCombination.get(qual.PXP_PAM_Partner_Account__c);
+
+            if (qual.PXP_PAM_Qualification_Code__c == 'CSPP' && otherResellerCombination != null) {
+                boolean hasOther = false;
+                Date otherExpiryDate;
+
+                for (PF_Application__c aa : otherResellerCombination) {
+                    if (aa.PF_Partner_Program_Type__c == 'OTHER') {
+                        hasOther = true;
+                        otherExpiryDate = aa.PF_Partner_Agreement__r.PXP_PAM_Agreement_Expiration_Date__c;
+                        break;
+                    }
+                }
+
+                if (hasOther) {
+                    qual.PXP_PAM_Expiry_Date__c = otherExpiryDate;
+                    qualsToBeUpdated.add(qual);
+                } else {
+                    qual.PXP_PAM_Status__c = 'DELETED';
+                    qualsToBeUpdated.add(qual);
+                }
+            } else if (qual.PXP_PAM_Qualification_Code__c == 'STI' ||
+                        qual.PXP_PAM_Qualification_Code__c == 'STIA' ||
+                        qual.PXP_PAM_Qualification_Code__c == 'LPA' ||
+                        (qual.PXP_PAM_Qualification_Code__c == 'NR_PTR' || qual.PXP_PAM_Qualification_Code__c == 'DEVNET_PTR')) {
+                // Handling conditions for STI, STIA, LPA, NR_PTR, DEVNET_PTR
+                qual.PXP_PAM_Status__c = 'DELETED';
+                qualsToBeUpdated.add(qual);
+            }
+        }
+    }
+
+    Database.SaveResult[] updateResult = Database.update(qualsToBeUpdated, false);
+}
+
+    // BEC partner update
+    if (!wrap.accountsForQual.isEmpty()) {
+        List<Account> accUpdate = new List<Account>();
+        Set<Id> accountsForQualSet = new Set<Id>(wrap.accountsForQual);
+
+        if (!accountAppMap.isEmpty()) {
+            for (Account acc : [
+                SELECT Id, PXP_Country_Code__c, ParentId, PXP_PAM_Purchasing_Relationship__c, PXP_PAM_PDB_BEC_ID__c
+                FROM Account
+                WHERE ParentId IN :accountsForQualSet AND PXP_PAM_Purchasing_Relationship__c != 'DIRECT'
+            ]) {
+                returnMapMethodWrapper returnWrapApp = returnMapMethod(acc.ParentId, accountAppMap);
+                String countryCode = returnCountrycode(acc.PXP_Country_Code__c);
+
+                if (!returnWrapApp.becActiveApplicationMap.get(countryCode) &&
+                    (returnWrapApp.pdbBecIdApplicationMap.get(countryCode) != null &&
+                        returnWrapApp.pdbBecIdApplicationMap.get(countryCode) == acc.PXP_PAM_PDB_BEC_ID__c) &&
+                    !accUpdate.contains(acc)) {
+                    acc.PXP_Partner_Type__c = 'VAR';
+                    acc.PF_Partner_Sub_Type__c = 'UNREGISTERED';
+                    accUpdate.add(acc);
+                }
+            }
+        }
+
+        // Updating the accounts
+        if (!accUpdate.isEmpty()) {
+            Database.SaveResult[] updateResult = Database.update(accUpdate, false);
+        }
+    }
+
+    return returnAggIds;
+	
+	}
+	
+    //generic method 4 to return string with country name form pxp country custom setting 
+    public static string returnCountrycode(string countCD){
+        string returnString ='';
+        for(pxp_country__c cs: countryList){
+            if(cs.COUNTRY_CD__c == countCD){
+                returnString = cs.PXP_Country_Code__c;
+                Break;
+            }
+        }
+        
+        return returnString;
+    }
+    //generic methos 3 for returing the country specific applications for a begeo
+    public static  returnMapMethodWrapper returnMapMethod(string acc,map<string,list<pf_application__c>> accountAppMAp){
+        map<string,list<pf_application__c>> returnMap = new map<string,list<pf_application__c>>();
+        map<string,boolean> becActiveApplicationMap = new map<string,boolean>();
+        map<string,string> pdbBecIdApplicationMap = new map<string,string>();
+        returnMapMethodWrapper returnWrap = new returnMapMethodWrapper();
+        //map<string,string> application
+        for(pf_application__c app :accountAppMAp.get(acc) ){
+            
+            if(app.PF_Partner_Agreement__r.PXP_PAM_Agreement_Expiration_Date__c > system.today()){
+                if(!becActiveApplicationMap.containsKey(app.PF_Country_Code__c)){
+                    becActiveApplicationMap.put(app.PF_Country_Code__c,true); 
+                }else if(becActiveApplicationMap.get(app.PF_Country_Code__c) == false){
+                    becActiveApplicationMap.put(app.PF_Country_Code__c,true);
+                }        
+            }else{
+                if(!becActiveApplicationMap.containsKey(app.PF_Country_Code__c)){
+                    becActiveApplicationMap.put(app.PF_Country_Code__c,false); 
+                }
+            }
+            if(!pdbBecIdApplicationMap.containsKey(app.PF_Country_Code__c)){
+                pdbBecIdApplicationMap.put(app.pf_country_code__c,app.PF_Application_BEC_Id__c);
+            }
+            
+        }
+        returnWrap.becActiveApplicationMap = becActiveApplicationMap;
+        returnWrap.pdbBecIdApplicationMap = pdbBecIdApplicationMap;
+        return returnWrap;
+    }
+    //wrapper for returnMapMethod method
+    public class returnMapMethodWrapper {
+        public map<string,boolean> becActiveApplicationMap = new map<string,boolean>();
+        public map<string,string> pdbBecIdApplicationMap = new map<string,string>();
+        
+    }
+    //generic method 2
+    public static excuionMethodWrapper excutionMethod(list<pf_application__c> scope,set<string> applicationIds,excuionMethodWrapper wrapper){
+        excuionMethodWrapper wrap = wrapper;
+        returnWrapperForexpiray returnWrapExpiry =   expiryExcutionMethod(scope,applicationIds);
+        if(returnWrapExpiry.agreementids.size()>0){wrap.readyToexpireAgreements.addAll(returnWrapExpiry.agreementids);}
+        if(returnWrapExpiry.accountForQualids.size()>0){wrap.accountsForQual.addAll(returnWrapExpiry.accountForQualids);}
+        if(returnWrapExpiry.readyToExpireApplications.size()>0){wrap.readyToExpireApplications.addAll(returnWrapExpiry.readyToExpireApplications);}
+        return wrap;
+    }
+    //wrapper for excution method
+    public class excuionMethodWrapper {
+        public set<id> readyToExpireAccounts = new set<id>();
+        public set<id> readyToexpireAgreements = new set<id>();
+        public set<id> accountsForQual = new set<id>();
+        public list<pf_application__c> readyToExpireApplications = new list<pf_application__c>();
+    }
+    
+    
+    
+    //generic metod to seprate applications wrt to program type 
+   public static returnWrapperscope genericMethod(pf_application__c finalApp, Set<String> DNRTrueApplication, returnWrapperscope scope) {
+    returnWrapperscope returnWrap = scope;
+    integer daysUntilExpiration = system.today().daysBetween(finalApp.PF_Partner_Agreement__r.PXP_PAM_Agreement_Expiration_Date__c);
+
+    if (daysUntilExpiration <= 0 && DNRTrueApplication.contains(finalApp.Id)) {
+        Map<String, Map<String, String>> programTypeMap = new Map<String, Map<String, String>>{
+            'RESELLER' => returnWrap.DNRExpiryReminderEmailResselerList,
+            'LP' => returnWrap.DNRExpiryReminderEmailLPList,
+            'STI' => returnWrap.DNRExpiryReminderEmailSTI,
+            'STIA' => returnWrap.DNRExpiryReminderEmailSTIAList,
+            'OTHER' => returnWrap.DNRExpiryReminderEmailOtherList,
+            'NONRESELLER' => returnWrap.DNRExpiryReminderEmailNRList
+        };
+
+        String programType = finalApp.PF_Partner_Program_Type__c;
+        if (programTypeMap.containsKey(programType)) {
+            programTypeMap.get(programType).put(finalApp.Id, finalApp.PF_Account__c);
+        }
+    } else if (daysUntilExpiration <= -10) {
+        Map<String, Map<String, String>> programTypeMap = new Map<String, Map<String, String>>{
+            'RESELLER' => returnWrap.ExpiryReminderEmailResselerList,
+            'LP' => returnWrap.ExpiryReminderEmailLPList,
+            'STI' => returnWrap.ExpiryReminderEmailSTI,
+            'STIA' => returnWrap.ExpiryReminderEmailSTIAList,
+            'OTHER' => returnWrap.ExpiryReminderEmailOtherList,
+            'NONRESELLER' => returnWrap.ExpiryReminderEmailNRList
+        };
+
+        String programType = finalApp.PF_Partner_Program_Type__c;
+        if (programTypeMap.containsKey(programType)) {
+            programTypeMap.get(programType).put(finalApp.Id, finalApp.PF_Account__c);
+        }
+    }
+    
+    return returnWrap;
+}
+    
+    //Expiray logic method 
+    public static returnWrapperForexpiray expiryExcutionMethod(list<pf_application__c> scope,set<string> applicationidsset){
+        returnWrapperForexpiray returnWrapper = new returnWrapperForexpiray();
+        set<id> agreementids = new set<id>();
+        set<id> accountids = new set<id>();
+        set<id> accountForQaualID = new set<id>();    
+        list<pf_application__c> ExpirayApplication = new list<pf_application__c>();
+        for(pf_application__c a : scope){
+            if(applicationidsset.contains(a.Id)){
+                ExpirayApplication.add(a);
+                agreementids.add(a.PF_Partner_Agreement__c);
+                accountForQaualID.add(a.pf_account__c);
+                
+            }
+        }
+        returnWrapper.readyToExpireApplications = ExpirayApplication;
+        returnWrapper.agreementids = agreementids;
+        returnWrapper.accountForQualids =accountForQaualID; 
+        return returnWrapper;
+    }
+    
+    //wrapper class for expiray logic
+    public class returnWrapperForexpiray{
+        public set<id> agreementids = new set<id>();
+        public set<id> accountForQualids = new set<id>();
+        public list<pf_application__c> readyToExpireApplications = new list<pf_application__c>();
+    }
+    
+    //Wrapper for scope Items
+    //Return Wrapper
+    public class returnWrapperscope { 
+        
+        public list<pf_application__c> finalApplications = new list<pf_application__c>();
+        
+        //For DNR true applications
+        public Map<String,String> DNRExpiryReminderEmailSTI = new Map<String,String>();
+        public Map<String,String> DNRExpiryReminderEmailSTIAList = new Map<String,String>();
+        public Map<String,String> DNRExpiryReminderEmailLPList = new Map<String,String>();
+        public Map<String,String> DNRExpiryReminderEmailResselerList = new Map<String,String>();
+        public Map<String,String> DNRExpiryReminderEmailOtherList = new Map<String,String>();
+        public Map<String,String> DNRExpiryReminderEmailNRList = new Map<String,String>();
+        //expiry applications
+        public Map<String,String> ExpiryReminderEmailSTI = new Map<String,String>();
+        public Map<String,String> ExpiryReminderEmailSTIAList = new Map<String,String>();
+        public Map<String,String> ExpiryReminderEmailLPList = new Map<String,String>();
+        public Map<String,String> ExpiryReminderEmailResselerList = new Map<String,String>();
+        public Map<String,String> ExpiryReminderEmailOtherList = new Map<String,String>();
+        public Map<String,String> ExpiryReminderEmailNRList = new Map<String,String>();
+        //reseller+other/Nr
+        public map<string,pf_application__c> otherAndNRCombinationForResellerList = new map<string,pf_application__c>();
+        //other + NR
+        public map<string,pf_application__c> otherNRcombinationfForExpiry = new map<string,pf_application__c>();
+        //for qual
+        map<id,list<pf_application__c>> OtherResellerCombination = new map<id,list<pf_application__c>>();
+    }
+}
